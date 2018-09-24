@@ -233,6 +233,16 @@ server_connect (server_t *self, const char *endpoint)
         zcert_destroy(&cert);
     }
 #endif
+
+    //  remove previous socket binded to same endpoint
+    zsock_t *prev_remote;
+    while (prev_remote = (zsock_t *)zlistx_next (self->remotes)) {
+        const char *prev_endpoint = zsock_endpoint (prev_remote);
+        if (strcmp (prev_endpoint, endpoint) == 0) {
+            zlistx_delete (self->remotes, prev_remote);
+        }
+    }
+    
     //  Never block on sending; we use an infinite HWM and buffer as many
     //  messages as needed in outgoing pipes. Note that the maximum number
     //  is the overall tuple set size.
@@ -243,6 +253,7 @@ server_connect (server_t *self, const char *endpoint)
         zsock_destroy (&remote);
         return;
     }
+
     //  Send HELLO and then PUBLISH for each tuple we have
     zgossip_msg_t *gossip = zgossip_msg_new ();
     zgossip_msg_set_id (gossip, ZGOSSIP_MSG_HELLO);
