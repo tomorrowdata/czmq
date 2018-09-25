@@ -121,13 +121,15 @@ static struct remote_t * remote_new() {
     return self;
 }
 
-static void remote_destroy(struct remote_t **remote) {
-    struct remote_t **self = (struct remote_t **)self;
-    zactor_t *mon = (**self).monitor;
-    zactor_destroy (&mon);
-    zsock_t *sock = (**self).socket;
-    zsock_destroy (&sock);
-    freen(self);
+static void remote_destroy(struct remote_t **self_p) {
+    if (*self_p) {
+        struct remote_t *self = *self_p;
+        zactor_t *mon = self->monitor;
+        zactor_destroy (&mon);
+        zsock_t *sock = self->socket;
+        zsock_destroy (&sock);
+        freen(self);
+    }    
 }
 
 //  ---------------------------------------------------------------------
