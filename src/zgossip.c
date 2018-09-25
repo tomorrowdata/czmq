@@ -105,6 +105,32 @@ typedef struct _client_t client_t;
 typedef struct _tuple_t tuple_t;
 
 //  ---------------------------------------------------------------------
+
+struct remote_t {
+    zsock_t *socket;
+    zactor_t *monitor;
+};
+
+static struct remote_t * remote_new() {
+    struct remote_t *self = zmalloc(sizeof(struct remote_t *));
+    self->socket = zsock_new (ZMQ_DEALER);
+    assert (self->socket);          //  No recovery if exhausted
+
+    self->monitor = zactor_new (zmonitor, self->socket);
+    assert (self->monitor);          //  No recovery if exhausted
+    return self;
+}
+
+static void remote_destroy(struct remote_t **remote) {
+    struct remote_t **self = (struct remote_t **)self;
+    zactor_t *mon = (**self).monitor;
+    zactor_destroy (&mon);
+    zsock_t *sock = (**self).socket;
+    zsock_destroy (&sock);
+    freen(self);
+}
+
+//  ---------------------------------------------------------------------
 //  This structure defines the context for each running server. Store
 //  whatever properties and structures you need for the server.
 
@@ -182,7 +208,7 @@ server_initialize (server_t *self)
 
     self->remotes = zlistx_new ();
     assert (self->remotes);
-    zlistx_set_destructor (self->remotes, (czmq_destructor *) zsock_destroy);
+    zlistx_set_destructor (self->remotes, (czmq_destructor *) remote_destroy);
 
     self->tuples = zhashx_new ();
     assert (self->tuples);
@@ -216,7 +242,7 @@ server_connect (server_t *self, const char *endpoint, const char *public_key)
 server_connect (server_t *self, const char *endpoint)
 #endif
 {
-    zsock_t *remote = zsock_new (ZMQ_DEALER);
+    struct remote_t *remote = remote_new();
     assert (remote);          //  No recovery if exhausted
 
 #ifdef CZMQ_BUILD_DRAFT_API
@@ -236,29 +262,29 @@ server_connect (server_t *self, const char *endpoint)
     //  Never block on sending; we use an infinite HWM and buffer as many
     //  messages as needed in outgoing pipes. Note that the maximum number
     //  is the overall tuple set size.
-    zsock_set_unbounded (remote);
+    zsock_set_unbounded (remote->socket);
 
-    if (zsock_connect (remote, "%s", endpoint)) {
+    if (zsock_connect (remote->socket, "%s", endpoint)) {
         zsys_warning ("bad zgossip endpoint '%s'", endpoint);
-        zsock_destroy (&remote);
+        remote_destroy (&remote);
         return;
     }
     //  Send HELLO and then PUBLISH for each tuple we have
     zgossip_msg_t *gossip = zgossip_msg_new ();
     zgossip_msg_set_id (gossip, ZGOSSIP_MSG_HELLO);
-    zgossip_msg_send (gossip, remote);
+    zgossip_msg_send (gossip, remote->socket);
 
     tuple_t *tuple = (tuple_t *) zhashx_first (self->tuples);
     while (tuple) {
         zgossip_msg_set_id (gossip, ZGOSSIP_MSG_PUBLISH);
         zgossip_msg_set_key (gossip, tuple->key);
         zgossip_msg_set_value (gossip, tuple->value);
-        zgossip_msg_send (gossip, remote);
+        zgossip_msg_send (gossip, remote->socket);
         tuple = (tuple_t *) zhashx_next (self->tuples);
     }
     //  Now monitor this remote for incoming messages
     zgossip_msg_destroy (&gossip);
-    engine_handle_socket (self, remote, remote_handler);
+    engine_handle_socket (self, remote->socket, remote_handler);
     zlistx_add_end (self->remotes, remote);
 }
 
@@ -293,12 +319,12 @@ server_accept (server_t *self, const char *key, const char *value)
     //  Copy new tuple announcement to all remotes
     zgossip_msg_t *gossip = zgossip_msg_new ();
     zgossip_msg_set_id (gossip, ZGOSSIP_MSG_PUBLISH);
-    zsock_t *remote = (zsock_t *) zlistx_first (self->remotes);
+    struct remote_t *remote = (struct remote_t *) zlistx_first (self->remotes);
     while (remote) {
         zgossip_msg_set_key (gossip, tuple->key);
         zgossip_msg_set_value (gossip, tuple->value);
-        zgossip_msg_send (gossip, remote);
-        remote = (zsock_t *) zlistx_next (self->remotes);
+        zgossip_msg_send (gossip, remote->socket);
+        remote = (struct remote_t *) zlistx_next (self->remotes);
     }
     zgossip_msg_destroy (&gossip);
 }
@@ -555,6 +581,9 @@ zgossip_test (bool verbose)
 
     //  got nothing
     zclock_sleep (200);
+
+    //  connect again
+    //zstr_sendx (alpha, "CONNECT", "inproc://base", NULL);    
 
     zstr_send (alpha, "STATUS");
     char *command, *status, *key, *value;
