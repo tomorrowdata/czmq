@@ -239,7 +239,7 @@ server_connect (server_t *self, const char *endpoint)
     while (prev_remote = (zsock_t *)zlistx_next (self->remotes)) {
         const char *prev_endpoint = zsock_endpoint (prev_remote);
         if (strcmp (prev_endpoint, endpoint) == 0) {
-            zlistx_delete (self->remotes, prev_remote);
+            zlistx_delete (self->remotes, zlistx_cursor(self->remotes));
         }
     }
     
