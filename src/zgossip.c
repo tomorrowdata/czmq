@@ -250,14 +250,14 @@ server_connect (server_t *self, const char *endpoint)
 #ifdef CZMQ_BUILD_DRAFT_API
     if (public_key){
         zcert_t *cert = zcert_new_from_txt (self->public_key, self->secret_key);
-        zcert_apply(cert, remote);
-        zsock_set_curve_serverkey (remote, public_key);
+        zcert_apply(cert, remote->socket);
+        zsock_set_curve_serverkey (remote->socket, public_key);
 #ifndef ZMQ_CURVE
         // legacy ZMQ support
         // inline incase the underlying assert is removed
         bool ZMQ_CURVE = false;
 #endif
-        assert (zsock_mechanism (remote) == ZMQ_CURVE);
+        assert (zsock_mechanism (remote->socket) == ZMQ_CURVE);
         zcert_destroy(&cert);
     }
 #endif
@@ -584,9 +584,6 @@ zgossip_test (bool verbose)
     //  got nothing
     zclock_sleep (200);
 
-    //  connect again
-    //zstr_sendx (alpha, "CONNECT", "inproc://base", NULL);    
-
     zstr_send (alpha, "STATUS");
     char *command, *status, *key, *value;
 
@@ -631,6 +628,59 @@ zgossip_test (bool verbose)
     zactor_destroy (&base);
     zactor_destroy (&alpha);
     zactor_destroy (&beta);
+
+
+    //  Test remote monitor
+    server = zactor_new (zgossip, "server");
+    assert (server);
+    if (verbose)
+        zstr_send (server, "VERBOSE");
+    //  Set a 100msec timeout on clients so we can test expiry
+    zstr_sendx (server, "SET", "server/timeout", "100", NULL);
+    zstr_sendx (server, "BIND", "tcp://127.0.0.1:*", NULL);
+    zstr_sendx (server, "PORT", NULL);
+    zstr_recvx (server, &command, &value, NULL);
+    assert (streq (command, "PORT"));
+    int port = atoi (value);
+    zstr_free (&command);
+    zstr_free (&value);
+    char endpoint [32];
+    sprintf (endpoint, "tcp://127.0.0.1:%d", port);
+
+
+    zactor_t *client1 = zactor_new (zgossip, "client");
+    assert (client1);
+    zstr_sendx (client1, "CONNECT", "tcp://127.0.0.1:&d", NULL);
+    if (verbose)
+        zstr_send (client1, "VERBOSE");
+    assert (client1);
+
+    zstr_sendx (client1, "CONNECT", endpoint, NULL);
+    zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
+
+    zclock_sleep (500);
+
+    zstr_send (server, "STATUS");
+    zclock_sleep (500);
+
+    zstr_recvx (server, &command, &key, &value, NULL);
+    assert (streq (command, "DELIVER"));
+    assert (streq (value, "service1"));
+
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
+
+
+    zstr_sendx (client1, "$TERM", NULL);
+    zstr_sendx (server, "$TERM", NULL);
+
+    zclock_sleep(500);
+
+    zactor_destroy (&client1);
+    zactor_destroy (&server);
+
+
 
 #ifdef CZMQ_BUILD_DRAFT_API
     // curve
