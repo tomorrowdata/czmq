@@ -611,6 +611,8 @@ zgossip_test (bool verbose)
     zsock_destroy (&client);
 
     //  Test peer-to-peer operations
+    printf("\n\n\n ******************** BEGIN PEER2PEER TEST ***********************\n\n");
+
     zactor_t *base = zactor_new (zgossip, "base");
     assert (base);
     if (verbose)
@@ -621,6 +623,7 @@ zgossip_test (bool verbose)
 
     zactor_t *alpha = zactor_new (zgossip, "alpha");
     assert (alpha);
+    zsys_debug("SEND CLIENT CONNECT");
     zstr_sendx (alpha, "CONNECT", "inproc://base", NULL);
     zstr_sendx (alpha, "PUBLISH", "inproc://alpha-1", "service1", NULL);
     zstr_sendx (alpha, "PUBLISH", "inproc://alpha-2", "service2", NULL);
@@ -687,7 +690,7 @@ zgossip_test (bool verbose)
     if (verbose)
         zstr_send (server, "VERBOSE");
     //  Set a 100msec timeout on clients so we can test expiry
-    zstr_sendx (server, "SET", "server/timeout", "100", NULL);
+    //zstr_sendx (server, "SET", "server/timeout", "100", NULL);
     zstr_sendx (server, "BIND", "tcp://127.0.0.1:*", NULL);
     zstr_sendx (server, "PORT", NULL);
     zstr_recvx (server, &command, &value, NULL);
@@ -705,15 +708,22 @@ zgossip_test (bool verbose)
         zstr_send (client1, "VERBOSE");
     assert (client1);
 
+    zsys_debug("client1: send PUBLISH");
     zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
 
-    zclock_sleep (500);
+    zclock_sleep(500);
 
+    zsys_debug("server: send STATUS");
     zstr_send (server, "STATUS");
-    zclock_sleep (500);
 
+    zclock_sleep(500);
+
+    zsys_debug("server: recv");
     zstr_recvx (server, &command, &key, &value, NULL);
+    
+    zsys_debug("server: assert"); 
     assert (streq (command, "DELIVER"));
+    zsys_debug("server: assert"); 
     assert (streq (value, "service1"));
 
     zstr_free (&command);
@@ -723,8 +733,12 @@ zgossip_test (bool verbose)
 
     // destroy server to test client ability to reconnect
     zclock_sleep (500);
+    
+    zsys_debug("server: send $TERM");
     zstr_sendx (server, "$TERM", NULL);
     zclock_sleep (500);
+    
+    zsys_debug("server: destroy");
     zactor_destroy (&server);
     zclock_sleep (500);
 
@@ -736,19 +750,25 @@ zgossip_test (bool verbose)
         zstr_send (server, "VERBOSE");
     //  Set a 100msec timeout on clients so we can test expiry
     zstr_sendx (server, "SET", "server/timeout", "100", NULL);
+
+    zsys_debug("server: send BIND");
     zstr_sendx (server, "BIND", endpoint, NULL);
-    zclock_sleep (500);
 
     // publish new message from client
-    zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
-    zclock_sleep (500);
+    zsys_debug("client1: send PUBLISH");
+    zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9002", "service2", NULL);
+    zclock_sleep(500);
 
+    zsys_debug("server: send STATUS");
     zstr_send (server, "STATUS");
-    zclock_sleep (500);
+    zclock_sleep(500);
 
+    zsys_debug("server: recv");
     zstr_recvx (server, &command, &key, &value, NULL);
+    zsys_debug("server: assert"); 
     assert (streq (command, "DELIVER"));
-    assert (streq (value, "service1"));
+    zsys_debug("server: assert"); 
+    assert (streq (value, "service2"));
 
     zstr_free (&command);
     zstr_free (&key);
