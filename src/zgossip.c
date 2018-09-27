@@ -118,7 +118,6 @@ static struct remote_t * remote_new() {
 
     self->monitor = zactor_new (zmonitor, self->socket);
     assert (self->monitor);          //  No recovery if exhausted
-    //zstr_sendx (self->monitor, "VERBOSE", NULL);
     zstr_sendx (self->monitor, "LISTEN", "DISCONNECTED", NULL);
     zstr_sendx (self->monitor, "START", NULL);
     zsock_wait (self->monitor);
@@ -127,13 +126,11 @@ static struct remote_t * remote_new() {
 }
 
 static void remote_destroy(struct remote_t **self_p) {
-    zsys_debug("destroying remote");
     if (*self_p) {
         struct remote_t *self = *self_p;
         zactor_t *mon = self->monitor;
         zactor_destroy (&mon);
         zsock_t *sock = self->socket;
-        zsys_debug("destroying remote socket");
         zsock_destroy (&sock);
         freen(self);
     }    
@@ -296,7 +293,7 @@ server_connect (server_t *self, const char *endpoint)
     //  Now monitor this remote for incoming messages
     zgossip_msg_destroy (&gossip);
     engine_handle_socket (self, remote->socket, remote_handler);
-    //engine_handle_socket (self, remote->monitor, remote_monitor_handler);
+    engine_handle_socket (self, remote->monitor, remote_monitor_handler);
     zlistx_add_end (self->remotes, remote);
 }
 
@@ -537,11 +534,12 @@ remote_handler (zloop_t *loop, zsock_t *remote, void *argument)
 static int
 remote_monitor_handler (zloop_t *loop, zsock_t *monitor, void *argument)
 {
-    zsys_debug("remote_monitor_handler!!!!!!!!!");
+    server_t *self = (server_t *) argument;
     zmsg_t *msg = zmsg_recv (monitor);
     assert (msg);
     char *event = zmsg_popstr (msg);
-    zsys_debug(event);
+    const char *socktype = zsock_type_str(monitor);
+    zsys_debug("remote_monitor_handler - serverptr: %p, monptr: %p - montype: %s - event: %s", self, monitor, socktype, event);
     freen (event);
     zmsg_destroy (&msg);    
     return 0;
@@ -658,7 +656,7 @@ zgossip_test (bool verbose)
 
     
     //  Test remote monitor
-    printf("BEGIN NEW TEST");
+    printf("\n\n\n ******************** BEGIN NEW TEST ***********************\n\n");
     server = zactor_new (zgossip, "server");
     assert (server);
     if (verbose)
@@ -682,7 +680,6 @@ zgossip_test (bool verbose)
         zstr_send (client1, "VERBOSE");
     assert (client1);
 
-    zstr_sendx (client1, "CONNECT", endpoint, NULL);
     zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
 
     zclock_sleep (500);
@@ -699,14 +696,12 @@ zgossip_test (bool verbose)
     zstr_free (&value);
 
     zclock_sleep (500);
-    printf("\nTEST DESTROYING SERVER\n");
     zstr_sendx (server, "$TERM", NULL);
     zclock_sleep (500);
     zactor_destroy (&server);
     zclock_sleep (500);
 
 
-    
     zstr_sendx (client1, "$TERM", NULL);
     //zstr_sendx (server, "$TERM", NULL);
 
@@ -715,7 +710,7 @@ zgossip_test (bool verbose)
     zactor_destroy (&client1);
     //zactor_destroy (&server);
 
-    printf("END NEW TEST");
+    printf("\n\nEND NEW TEST\n\n");
     
 
 #ifdef CZMQ_BUILD_DRAFT_API
