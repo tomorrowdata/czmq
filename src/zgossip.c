@@ -118,15 +118,22 @@ static struct remote_t * remote_new() {
 
     self->monitor = zactor_new (zmonitor, self->socket);
     assert (self->monitor);          //  No recovery if exhausted
+    //zstr_sendx (self->monitor, "VERBOSE", NULL);
+    zstr_sendx (self->monitor, "LISTEN", "DISCONNECTED", NULL);
+    zstr_sendx (self->monitor, "START", NULL);
+    zsock_wait (self->monitor);
+
     return self;
 }
 
 static void remote_destroy(struct remote_t **self_p) {
+    zsys_debug("destroying remote");
     if (*self_p) {
         struct remote_t *self = *self_p;
         zactor_t *mon = self->monitor;
         zactor_destroy (&mon);
         zsock_t *sock = self->socket;
+        zsys_debug("destroying remote socket");
         zsock_destroy (&sock);
         freen(self);
     }    
@@ -191,6 +198,8 @@ tuple_free (void *argument)
 //  Handle traffic from remotes
 static int
 remote_handler (zloop_t *loop, zsock_t *remote, void *argument);
+static int
+remote_monitor_handler (zloop_t *loop, zsock_t *remote, void *argument);
 
 //  ---------------------------------------------------------------------
 //  Include the generated server engine
@@ -287,6 +296,7 @@ server_connect (server_t *self, const char *endpoint)
     //  Now monitor this remote for incoming messages
     zgossip_msg_destroy (&gossip);
     engine_handle_socket (self, remote->socket, remote_handler);
+    //engine_handle_socket (self, remote->monitor, remote_monitor_handler);
     zlistx_add_end (self->remotes, remote);
 }
 
@@ -522,6 +532,23 @@ remote_handler (zloop_t *loop, zsock_t *remote, void *argument)
 
 
 //  --------------------------------------------------------------------------
+//  Handle messages coming from remotes monitors
+
+static int
+remote_monitor_handler (zloop_t *loop, zsock_t *monitor, void *argument)
+{
+    zsys_debug("remote_monitor_handler!!!!!!!!!");
+    zmsg_t *msg = zmsg_recv (monitor);
+    assert (msg);
+    char *event = zmsg_popstr (msg);
+    zsys_debug(event);
+    freen (event);
+    zmsg_destroy (&msg);    
+    return 0;
+}
+
+
+//  --------------------------------------------------------------------------
 //  Selftest
 
 void
@@ -629,8 +656,9 @@ zgossip_test (bool verbose)
     zactor_destroy (&alpha);
     zactor_destroy (&beta);
 
-
+    
     //  Test remote monitor
+    printf("BEGIN NEW TEST");
     server = zactor_new (zgossip, "server");
     assert (server);
     if (verbose)
@@ -647,10 +675,9 @@ zgossip_test (bool verbose)
     char endpoint [32];
     sprintf (endpoint, "tcp://127.0.0.1:%d", port);
 
-
     zactor_t *client1 = zactor_new (zgossip, "client");
     assert (client1);
-    zstr_sendx (client1, "CONNECT", "tcp://127.0.0.1:&d", NULL);
+    zstr_sendx (client1, "CONNECT", endpoint, NULL);
     if (verbose)
         zstr_send (client1, "VERBOSE");
     assert (client1);
@@ -671,16 +698,25 @@ zgossip_test (bool verbose)
     zstr_free (&key);
     zstr_free (&value);
 
-
-    zstr_sendx (client1, "$TERM", NULL);
+    zclock_sleep (500);
+    printf("\nTEST DESTROYING SERVER\n");
     zstr_sendx (server, "$TERM", NULL);
+    zclock_sleep (500);
+    zactor_destroy (&server);
+    zclock_sleep (500);
+
+
+    
+    zstr_sendx (client1, "$TERM", NULL);
+    //zstr_sendx (server, "$TERM", NULL);
 
     zclock_sleep(500);
 
     zactor_destroy (&client1);
-    zactor_destroy (&server);
+    //zactor_destroy (&server);
 
-
+    printf("END NEW TEST");
+    
 
 #ifdef CZMQ_BUILD_DRAFT_API
     // curve
