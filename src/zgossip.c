@@ -290,9 +290,10 @@ server_connect (server_t *self, const char *endpoint)
         zgossip_msg_send (gossip, remote->socket);
         tuple = (tuple_t *) zhashx_next (self->tuples);
     }
-    //  Now monitor this remote for incoming messages
     zgossip_msg_destroy (&gossip);
+    //  Now monitor this remote for incoming messages
     engine_handle_socket (self, remote->socket, remote_handler);
+    //  Now monitor this remote for underlying socket status
     engine_handle_socket (self, remote->monitor, remote_monitor_handler);
     zlistx_add_end (self->remotes, remote);
 }
@@ -538,10 +539,34 @@ remote_monitor_handler (zloop_t *loop, zsock_t *monitor, void *argument)
     zmsg_t *msg = zmsg_recv (monitor);
     assert (msg);
     char *event = zmsg_popstr (msg);
-    const char *socktype = zsock_type_str(monitor);
-    zsys_debug("remote_monitor_handler - serverptr: %p, monptr: %p - montype: %s - event: %s", self, monitor, socktype, event);
-    freen (event);
     zmsg_destroy (&msg);    
+    
+    zsys_debug("remote_monitor_handler - serverptr: %p, monptr: %p - event: %s", self, monitor, event);
+    
+    if (strcmp(event, "DISCONNECTED") == 0) {
+        zsys_debug("SENDING HELLO");
+        // remote socket disconnected, resend HELLO to that remote
+        // so that it will be able to re-handshake when the bind endpoint 
+        // will come back
+
+        // find the remote owning the current monitor socket
+        struct remote_t *remote = (struct remote_t *) zlistx_first (self->remotes);
+        while (remote) {
+            if (zactor_sock(remote->monitor) == monitor) {
+                zsys_debug("found remote!");
+                break;
+            }
+            remote = (struct remote_t *) zlistx_next (self->remotes);
+        }
+
+        zgossip_msg_t *gossip = zgossip_msg_new ();
+        zgossip_msg_set_id (gossip, ZGOSSIP_MSG_HELLO);
+        zgossip_msg_send (gossip, remote->socket);
+        // TODO: do we have to resend tuples here?
+        zgossip_msg_destroy (&gossip);
+
+    }
+    freen (event);
     return 0;
 }
 
@@ -695,6 +720,8 @@ zgossip_test (bool verbose)
     zstr_free (&key);
     zstr_free (&value);
 
+
+    // destroy server to test client ability to reconnect
     zclock_sleep (500);
     zstr_sendx (server, "$TERM", NULL);
     zclock_sleep (500);
@@ -702,13 +729,40 @@ zgossip_test (bool verbose)
     zclock_sleep (500);
 
 
+    // rebind server to test reconnect from client
+    server = zactor_new (zgossip, "server");
+    assert (server);
+    if (verbose)
+        zstr_send (server, "VERBOSE");
+    //  Set a 100msec timeout on clients so we can test expiry
+    zstr_sendx (server, "SET", "server/timeout", "100", NULL);
+    zstr_sendx (server, "BIND", endpoint, NULL);
+    zclock_sleep (500);
+
+    // publish new message from client
+    zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
+    zclock_sleep (500);
+
+    zstr_send (server, "STATUS");
+    zclock_sleep (500);
+
+    zstr_recvx (server, &command, &key, &value, NULL);
+    assert (streq (command, "DELIVER"));
+    assert (streq (value, "service1"));
+
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
+
+
+    // destroy everything
     zstr_sendx (client1, "$TERM", NULL);
-    //zstr_sendx (server, "$TERM", NULL);
+    zstr_sendx (server, "$TERM", NULL);
 
     zclock_sleep(500);
 
     zactor_destroy (&client1);
-    //zactor_destroy (&server);
+    zactor_destroy (&server);
 
     printf("\n\nEND NEW TEST\n\n");
     
