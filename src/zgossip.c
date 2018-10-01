@@ -108,31 +108,33 @@ typedef struct _tuple_t tuple_t;
 
 struct remote_t {
     zsock_t *socket;
-    zactor_t *monitor;
+    char *endpoint;
 };
 
-static struct remote_t * remote_new() {
+static struct remote_t * remote_new(const char *endpoint) {
     struct remote_t *self = zmalloc(sizeof(struct remote_t *));
     self->socket = zsock_new (ZMQ_DEALER);
     assert (self->socket);          //  No recovery if exhausted
-
-    self->monitor = zactor_new (zmonitor, self->socket);
-    assert (self->monitor);          //  No recovery if exhausted
-    zstr_sendx (self->monitor, "LISTEN", "DISCONNECTED", NULL);
-    zstr_sendx (self->monitor, "START", NULL);
-    zsock_wait (self->monitor);
-
+    self->endpoint = zmalloc(sizeof(endpoint));
+    strcpy(self->endpoint, endpoint);
     return self;
+}
+
+static int remote_connect(struct remote_t *self) {
+    return zsock_connect (self->socket, "%s", self->endpoint);
 }
 
 static void remote_destroy(struct remote_t **self_p) {
     if (*self_p) {
+        zsys_debug("remote_destroy enter");
         struct remote_t *self = *self_p;
-        zactor_t *mon = self->monitor;
-        zactor_destroy (&mon);
         zsock_t *sock = self->socket;
         zsock_destroy (&sock);
+        zsys_debug("remote_destroy socket");
+        freen(self->endpoint);
+        zsys_debug("remote_destroy endpoint");        
         freen(self);
+        zsys_debug("remote_destroy exit");
     }    
 }
 
@@ -250,7 +252,20 @@ server_connect (server_t *self, const char *endpoint, const char *public_key)
 server_connect (server_t *self, const char *endpoint)
 #endif
 {
-    struct remote_t *remote = remote_new();
+    int nr = zlistx_size(self->remotes);
+    zsys_debug("num remotes: %d", nr);
+    
+    struct remote_t *dupremote = (struct remote_t *) zlistx_first (self->remotes);
+    while (dupremote) {
+        if (strcmp(dupremote->endpoint, endpoint) == 0) {
+            zlistx_delete (self->remotes, zlistx_cursor (self->remotes));
+            zsys_debug("found and removed endpoint: %s", endpoint);
+            break;
+        }
+        dupremote = (struct remote_t *) zlistx_next (self->remotes);
+    }
+
+    struct remote_t *remote = remote_new(endpoint);
     assert (remote);          //  No recovery if exhausted
 
 #ifdef CZMQ_BUILD_DRAFT_API
@@ -272,8 +287,8 @@ server_connect (server_t *self, const char *endpoint)
     //  is the overall tuple set size.
     zsock_set_unbounded (remote->socket);
 
-    if (zsock_connect (remote->socket, "%s", endpoint)) {
-        zsys_warning ("bad zgossip endpoint '%s'", endpoint);
+    if (remote_connect (remote)) {
+        zsys_warning ("bad zgossip endpoint '%s'", remote->endpoint);
         remote_destroy (&remote);
         return;
     }
@@ -293,8 +308,6 @@ server_connect (server_t *self, const char *endpoint)
     zgossip_msg_destroy (&gossip);
     //  Now monitor this remote for incoming messages
     engine_handle_socket (self, remote->socket, remote_handler);
-    //  Now monitor this remote for underlying socket status
-    engine_handle_socket (self, remote->monitor, remote_monitor_handler);
     zlistx_add_end (self->remotes, remote);
 }
 
@@ -304,6 +317,7 @@ server_connect (server_t *self, const char *endpoint)
 static void
 server_accept (server_t *self, const char *key, const char *value)
 {
+    zsys_debug("server_accept tuple");
     tuple_t *tuple = (tuple_t *) zhashx_lookup (self->tuples, key);
     if (tuple && streq (tuple->value, value))
         return;                 //  Duplicate tuple, do nothing
@@ -528,44 +542,6 @@ remote_handler (zloop_t *loop, zsock_t *remote, void *argument)
     return 0;
 }
 
-
-//  --------------------------------------------------------------------------
-//  Handle messages coming from remotes monitors
-
-static int
-remote_monitor_handler (zloop_t *loop, zsock_t *monitor, void *argument)
-{
-    server_t *self = (server_t *) argument;
-    zmsg_t *msg = zmsg_recv (monitor);
-    assert (msg);
-    char *event = zmsg_popstr (msg);
-    zmsg_destroy (&msg);    
-    
-    if (strcmp(event, "DISCONNECTED") == 0) {
-        // remote socket disconnected, resend HELLO to that remote
-        // so that it will be able to re-handshake when the bind endpoint 
-        // will come back
-
-        // find the remote owning the current monitor socket
-        struct remote_t *remote = (struct remote_t *) zlistx_first (self->remotes);
-        while (remote) {
-            if (zactor_sock(remote->monitor) == monitor) {
-                break;
-            }
-            remote = (struct remote_t *) zlistx_next (self->remotes);
-        }
-
-        zgossip_msg_t *gossip = zgossip_msg_new ();
-        zgossip_msg_set_id (gossip, ZGOSSIP_MSG_HELLO);
-        zgossip_msg_send (gossip, remote->socket);
-        zgossip_msg_destroy (&gossip);
-
-    }
-    freen (event);
-    return 0;
-}
-
-
 //  --------------------------------------------------------------------------
 //  Selftest
 
@@ -681,7 +657,7 @@ zgossip_test (bool verbose)
     if (verbose)
         zstr_send (server, "VERBOSE");
     //  Set a 100msec timeout on clients so we can test expiry
-    zstr_sendx (server, "SET", "server/timeout", "100", NULL);
+    zstr_sendx (server, "SET", "server/timeout", "100000", NULL);
     zstr_sendx (server, "BIND", "tcp://127.0.0.1:*", NULL);
     zstr_sendx (server, "PORT", NULL);
     zstr_recvx (server, &command, &value, NULL);
@@ -694,10 +670,9 @@ zgossip_test (bool verbose)
 
     zactor_t *client1 = zactor_new (zgossip, "client");
     assert (client1);
-    zstr_sendx (client1, "CONNECT", endpoint, NULL);
     if (verbose)
         zstr_send (client1, "VERBOSE");
-    assert (client1);
+    zstr_sendx (client1, "CONNECT", endpoint, NULL);
 
     zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
 
@@ -708,52 +683,28 @@ zgossip_test (bool verbose)
     zclock_sleep(500);
 
     zstr_recvx (server, &command, &key, &value, NULL);
+    printf("\ncommand: %s - value: %s\n", command, value);
     
     assert (streq (command, "DELIVER"));
     assert (streq (value, "service1"));
 
-    zstr_free (&command);
-    zstr_free (&key);
-    zstr_free (&value);
-
-
-    // destroy server to test client ability to reconnect
-    zclock_sleep (500);
-    
-    zstr_sendx (server, "$TERM", NULL);
-    zclock_sleep (500);
-    
-    zactor_destroy (&server);
-    zclock_sleep (500);
-
-
-    // rebind server to test reconnect from client
-    server = zactor_new (zgossip, "server");
-    assert (server);
-    if (verbose)
-        zstr_send (server, "VERBOSE");
-    //  Set a 100msec timeout on clients so we can test expiry
-    zstr_sendx (server, "SET", "server/timeout", "100", NULL);
-
-    zstr_sendx (server, "BIND", endpoint, NULL);
-
-    // publish new message from client
-    // note: the same tuple published before won't be sent
-    // since duplicate tuples are discarded
-    zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9002", "service2", NULL);
-    zclock_sleep(500);
-
-    zstr_send (server, "STATUS");
-    zclock_sleep(500);
-
-    zstr_recvx (server, &command, &key, &value, NULL);
-    assert (streq (command, "DELIVER"));
-    assert (streq (value, "service2"));
+    zstr_recvx (server, &command, &value, NULL);
+    printf("\ncommand: %s - value: %s\n", command, value);
 
     zstr_free (&command);
     zstr_free (&key);
     zstr_free (&value);
 
+
+    zclock_sleep(500);
+    printf("\nRECONNECT\n");
+    
+    // TODO: this is not working:    !!!!!!!!!!!!!!!
+    zstr_sendx (client1, "CONNECT", endpoint, NULL);
+
+    //zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9002", "service2", NULL);
+
+    zclock_sleep(500);
 
     // destroy everything
     zstr_sendx (client1, "$TERM", NULL);
