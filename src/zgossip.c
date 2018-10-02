@@ -176,61 +176,47 @@ struct remote_t {
     char *endpoint;
 };
 
-static struct remote_t * server_get_remote_instance(server_t *self, const char *endpoint) {
-
-    //DEBUG
-    int nr = zlistx_size(self->remotes);
-    zsys_debug("num remotes: %d", nr);
-
+static struct remote_t * server_get_remote_instance (server_t *self, const char *endpoint) {
     
     struct remote_t *remote = (struct remote_t *) zlistx_first (self->remotes);
     while (remote) {
-        if (strcmp(remote->endpoint, endpoint) == 0) {
-            zsys_debug("found endpoint: %s", endpoint);
-            zsock_disconnect(remote->socket, remote->endpoint);
+        if (strcmp (remote->endpoint, endpoint) == 0) {
+            zsock_disconnect (remote->socket, remote->endpoint);
             break;
         }
         remote = (struct remote_t *) zlistx_next (self->remotes);
     }
 
-    zsys_debug("loop passed");
     if (!remote) {
-        zsys_debug("remote doesn't exist; creating");
-        remote = zmalloc(sizeof(struct remote_t *));
+        remote = zmalloc (sizeof(struct remote_t *));
         remote->socket = zsock_new (ZMQ_DEALER);
         assert (remote->socket);          //  No recovery if exhausted
-        remote->endpoint = zmalloc(sizeof(endpoint));
+        remote->endpoint = zmalloc (sizeof (endpoint));
         assert (remote->endpoint);
-        strcpy(remote->endpoint, endpoint);
+        strcpy (remote->endpoint, endpoint);
     
         assert (remote);          //  No recovery if exhausted
 
         //  Now monitor this remote for incoming messages
         engine_handle_socket (self, remote->socket, remote_handler);
         zlistx_add_end (self->remotes, remote);
-
-        zsys_debug("remote created");
     }
 
     return remote;
 
 }
 
-static int remote_connect(struct remote_t *self) {
+static int remote_connect (struct remote_t *self) {
     return zsock_connect (self->socket, "%s", self->endpoint);
 }
 
-static void remote_destroy(struct remote_t **self_p) {
+static void remote_destroy (struct remote_t **self_p) {
     if (*self_p) {
-        zsys_debug("remote_destroy enter");
         struct remote_t *self = *self_p;
         zsock_t *sock = self->socket;
         zsock_destroy (&sock);
-        zsys_debug("remote_destroy socket");
-        freen(self->endpoint);
-        zsys_debug("remote_destroy endpoint");        
-        freen(self);
-        zsys_debug("remote_destroy exit");
+        freen (self->endpoint);
+        freen (self);
     }    
 }
 
@@ -265,20 +251,14 @@ server_initialize (server_t *self)
 static void
 server_terminate (server_t *self)
 {
-    zsys_debug("server_terminate enter");
     zgossip_msg_destroy (&self->message);
-    zsys_debug("server_terminate msg destroyed");
     zlistx_destroy (&self->remotes);
-    zsys_debug("server_terminate list destroyed");
     zhashx_destroy (&self->tuples);
-    zsys_debug("server_terminate tuple destroyed");
     zstr_free (&self->public_key);
     zstr_free (&self->secret_key);
 #ifdef CZMQ_BUILD_DRAFT_API
     zstr_free (&self->zap_domain);
 #endif
-    zsys_debug("server_terminate exit");
-
 }
 
 //  Connect to a remote server
@@ -337,7 +317,6 @@ server_connect (server_t *self, const char *endpoint)
 static void
 server_accept (server_t *self, const char *key, const char *value)
 {
-    zsys_debug("server_accept tuple");
     tuple_t *tuple = (tuple_t *) zhashx_lookup (self->tuples, key);
     if (tuple && streq (tuple->value, value))
         return;                 //  Duplicate tuple, do nothing
@@ -763,7 +742,6 @@ zgossip_test (bool verbose)
 
 #ifdef CZMQ_BUILD_DRAFT_API
     // curve
-    printf("\nstart curve test\n");
 
     if (zsys_has_curve()) {
         if (verbose)
