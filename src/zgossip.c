@@ -105,40 +105,6 @@ typedef struct _client_t client_t;
 typedef struct _tuple_t tuple_t;
 
 //  ---------------------------------------------------------------------
-
-struct remote_t {
-    zsock_t *socket;
-    char *endpoint;
-};
-
-static struct remote_t * remote_new(const char *endpoint) {
-    struct remote_t *self = zmalloc(sizeof(struct remote_t *));
-    self->socket = zsock_new (ZMQ_DEALER);
-    assert (self->socket);          //  No recovery if exhausted
-    self->endpoint = zmalloc(sizeof(endpoint));
-    strcpy(self->endpoint, endpoint);
-    return self;
-}
-
-static int remote_connect(struct remote_t *self) {
-    return zsock_connect (self->socket, "%s", self->endpoint);
-}
-
-static void remote_destroy(struct remote_t **self_p) {
-    if (*self_p) {
-        zsys_debug("remote_destroy enter");
-        struct remote_t *self = *self_p;
-        zsock_t *sock = self->socket;
-        zsock_destroy (&sock);
-        zsys_debug("remote_destroy socket");
-        freen(self->endpoint);
-        zsys_debug("remote_destroy endpoint");        
-        freen(self);
-        zsys_debug("remote_destroy exit");
-    }    
-}
-
-//  ---------------------------------------------------------------------
 //  This structure defines the context for each running server. Store
 //  whatever properties and structures you need for the server.
 
@@ -197,13 +163,78 @@ tuple_free (void *argument)
 //  Handle traffic from remotes
 static int
 remote_handler (zloop_t *loop, zsock_t *remote, void *argument);
-static int
-remote_monitor_handler (zloop_t *loop, zsock_t *remote, void *argument);
 
 //  ---------------------------------------------------------------------
 //  Include the generated server engine
 
 #include "zgossip_engine.inc"
+
+//  ---------------------------------------------------------------------
+
+struct remote_t {
+    zsock_t *socket;
+    char *endpoint;
+};
+
+static struct remote_t * server_get_remote_instance(server_t *self, const char *endpoint) {
+
+    //DEBUG
+    int nr = zlistx_size(self->remotes);
+    zsys_debug("num remotes: %d", nr);
+
+    
+    struct remote_t *remote = (struct remote_t *) zlistx_first (self->remotes);
+    while (remote) {
+        if (strcmp(remote->endpoint, endpoint) == 0) {
+            zsys_debug("found endpoint: %s", endpoint);
+            zsock_disconnect(remote->socket, remote->endpoint);
+            break;
+        }
+        remote = (struct remote_t *) zlistx_next (self->remotes);
+    }
+
+    zsys_debug("loop passed");
+    if (!remote) {
+        zsys_debug("remote doesn't exist; creating");
+        remote = zmalloc(sizeof(struct remote_t *));
+        remote->socket = zsock_new (ZMQ_DEALER);
+        assert (remote->socket);          //  No recovery if exhausted
+        remote->endpoint = zmalloc(sizeof(endpoint));
+        assert (remote->endpoint);
+        strcpy(remote->endpoint, endpoint);
+    
+        assert (remote);          //  No recovery if exhausted
+
+        //  Now monitor this remote for incoming messages
+        engine_handle_socket (self, remote->socket, remote_handler);
+        zlistx_add_end (self->remotes, remote);
+
+        zsys_debug("remote created");
+    }
+
+    return remote;
+
+}
+
+static int remote_connect(struct remote_t *self) {
+    return zsock_connect (self->socket, "%s", self->endpoint);
+}
+
+static void remote_destroy(struct remote_t **self_p) {
+    if (*self_p) {
+        zsys_debug("remote_destroy enter");
+        struct remote_t *self = *self_p;
+        zsock_t *sock = self->socket;
+        zsock_destroy (&sock);
+        zsys_debug("remote_destroy socket");
+        freen(self->endpoint);
+        zsys_debug("remote_destroy endpoint");        
+        freen(self);
+        zsys_debug("remote_destroy exit");
+    }    
+}
+
+
 
 //  Allocate properties and structures for a new server instance.
 //  Return 0 if OK, or -1 if there was an error.
@@ -234,14 +265,20 @@ server_initialize (server_t *self)
 static void
 server_terminate (server_t *self)
 {
+    zsys_debug("server_terminate enter");
     zgossip_msg_destroy (&self->message);
+    zsys_debug("server_terminate msg destroyed");
     zlistx_destroy (&self->remotes);
+    zsys_debug("server_terminate list destroyed");
     zhashx_destroy (&self->tuples);
+    zsys_debug("server_terminate tuple destroyed");
     zstr_free (&self->public_key);
     zstr_free (&self->secret_key);
 #ifdef CZMQ_BUILD_DRAFT_API
     zstr_free (&self->zap_domain);
 #endif
+    zsys_debug("server_terminate exit");
+
 }
 
 //  Connect to a remote server
@@ -252,21 +289,7 @@ server_connect (server_t *self, const char *endpoint, const char *public_key)
 server_connect (server_t *self, const char *endpoint)
 #endif
 {
-    int nr = zlistx_size(self->remotes);
-    zsys_debug("num remotes: %d", nr);
-    
-    struct remote_t *dupremote = (struct remote_t *) zlistx_first (self->remotes);
-    while (dupremote) {
-        if (strcmp(dupremote->endpoint, endpoint) == 0) {
-            zlistx_delete (self->remotes, zlistx_cursor (self->remotes));
-            zsys_debug("found and removed endpoint: %s", endpoint);
-            break;
-        }
-        dupremote = (struct remote_t *) zlistx_next (self->remotes);
-    }
-
-    struct remote_t *remote = remote_new(endpoint);
-    assert (remote);          //  No recovery if exhausted
+    struct remote_t *remote = server_get_remote_instance(self, endpoint);
 
 #ifdef CZMQ_BUILD_DRAFT_API
     if (public_key){
@@ -306,9 +329,6 @@ server_connect (server_t *self, const char *endpoint)
         tuple = (tuple_t *) zhashx_next (self->tuples);
     }
     zgossip_msg_destroy (&gossip);
-    //  Now monitor this remote for incoming messages
-    engine_handle_socket (self, remote->socket, remote_handler);
-    zlistx_add_end (self->remotes, remote);
 }
 
 
@@ -707,16 +727,22 @@ zgossip_test (bool verbose)
     zclock_sleep(500);
 
     // destroy everything
+    printf("\nterm client\n");
     zstr_sendx (client1, "$TERM", NULL);
+    printf("\nterm server\n");
     zstr_sendx (server, "$TERM", NULL);
 
     zclock_sleep(500);
 
+    printf("\ndestroy client\n");
     zactor_destroy (&client1);
+    printf("\ndestroy server\n");
     zactor_destroy (&server);    
 
 #ifdef CZMQ_BUILD_DRAFT_API
     // curve
+    printf("\nstart curve test\n");
+
     if (zsys_has_curve()) {
         if (verbose)
             printf("testing CURVE support");
