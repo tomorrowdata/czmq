@@ -667,7 +667,7 @@ zgossip_test (bool verbose)
     char endpoint [32];
     sprintf (endpoint, "tcp://127.0.0.1:%d", port);
 
-    zactor_t *client1 = zactor_new (zgossip, "client");
+    zactor_t *client1 = zactor_new (zgossip, "client1");
     assert (client1);
     if (verbose)
         zstr_send (client1, "VERBOSE");
@@ -708,14 +708,13 @@ zgossip_test (bool verbose)
     zclock_sleep(500);
     zstr_send (server, "STATUS");
     zclock_sleep(500);
-    zstr_recvx (server, &command, &key, &value, NULL);
-    // server discards previous tuple as duplicate:
+    // server has 1 tuple stored:
+    zstr_recvx (server, &command, &status, NULL);
     assert (streq (command, "STATUS"));
-    assert (!value);
+    //printf("status: %d\n", atoi(status));
+    assert (atoi (status) == 1);
     zstr_free (&command);
-    zstr_free (&key);
-    zstr_free (&value);
-
+    zstr_free (&status);
 
     zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9002", "service2", NULL);
 
@@ -730,14 +729,53 @@ zgossip_test (bool verbose)
     zstr_free (&key);
     zstr_free (&value);
 
+    // server has 2 tuples stored:
+    zstr_recvx (server, &command, &status, NULL);
+    assert (streq (command, "STATUS"));
+    assert (atoi (status) == 2);
+    zstr_free (&command);
+    zstr_free (&status);
+
+    zactor_t *client2 = zactor_new (zgossip, "client2");
+    assert (client2);
+    if (verbose)
+        zstr_send (client2, "VERBOSE");
+    zstr_sendx (client2, "CONNECT", endpoint, NULL);
+
+    zclock_sleep(500);
+    zstr_send (client2, "STATUS");
+    zclock_sleep(500);
+    // client2 gets both tuples:
+    zstr_recvx (client2, &command, &key, &value, NULL);
+    assert (streq (command, "DELIVER"));
+    assert (streq (value, "service2"));
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
+    zstr_recvx (client2, &command, &key, &value, NULL);
+    assert (streq (command, "DELIVER"));
+    assert (streq (value, "service1"));
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
+
+    // client2 has 2 tuples stored:
+    zstr_recvx (client2, &command, &status, NULL);
+    assert (streq (command, "STATUS"));
+    assert (atoi (status) == 2);
+    zstr_free (&command);
+    zstr_free (&status);
+
     zclock_sleep(500);
 
     zstr_sendx (client1, "$TERM", NULL);
+    zstr_sendx (client2, "$TERM", NULL);
     zstr_sendx (server, "$TERM", NULL);
 
     zclock_sleep(500);
 
     zactor_destroy (&client1);
+    zactor_destroy (&client2);
     zactor_destroy (&server);    
 
 #ifdef CZMQ_BUILD_DRAFT_API
