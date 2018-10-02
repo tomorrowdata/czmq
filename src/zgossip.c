@@ -671,12 +671,12 @@ zgossip_test (bool verbose)
     zactor_destroy (&beta);
 
     
-    //  Test client reconnect after server is destroyed and re-created
+    //  Test remote is reused after client second connect
     server = zactor_new (zgossip, "server");
     assert (server);
     if (verbose)
         zstr_send (server, "VERBOSE");
-    //  Set a 100msec timeout on clients so we can test expiry
+    //  Set a 100msec timeout on clients so client never expires
     zstr_sendx (server, "SET", "server/timeout", "100000", NULL);
     zstr_sendx (server, "BIND", "tcp://127.0.0.1:*", NULL);
     zstr_sendx (server, "PORT", NULL);
@@ -697,46 +697,68 @@ zgossip_test (bool verbose)
     zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9001", "service1", NULL);
 
     zclock_sleep(500);
-
     zstr_send (server, "STATUS");
-
     zclock_sleep(500);
 
     zstr_recvx (server, &command, &key, &value, NULL);
-    printf("\ncommand: %s - value: %s\n", command, value);
     
     assert (streq (command, "DELIVER"));
     assert (streq (value, "service1"));
 
     zstr_recvx (server, &command, &value, NULL);
-    printf("\ncommand: %s - value: %s\n", command, value);
 
     zstr_free (&command);
     zstr_free (&key);
     zstr_free (&value);
 
-
     zclock_sleep(500);
-    printf("\nRECONNECT\n");
     
-    // TODO: this is not working:    !!!!!!!!!!!!!!!
     zstr_sendx (client1, "CONNECT", endpoint, NULL);
 
-    //zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9002", "service2", NULL);
+    zclock_sleep(500);
+    zstr_send (client1, "STATUS");
+    zclock_sleep(500);
+    zstr_recvx (client1, &command, &key, &value, NULL);
+    // clients re-delivers previous tuple:
+    assert (streq (command, "DELIVER"));
+    assert (streq (value, "service1"));
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
+
+    zclock_sleep(500);
+    zstr_send (server, "STATUS");
+    zclock_sleep(500);
+    zstr_recvx (server, &command, &key, &value, NULL);
+    // server discards previous tuple as duplicate:
+    assert (streq (command, "STATUS"));
+    assert (!value);
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
+
+
+    zstr_sendx (client1, "PUBLISH", "tcp://127.0.0.1:9002", "service2", NULL);
+
+    zclock_sleep(500);
+    zstr_send (server, "STATUS");
+    zclock_sleep(500);
+    zstr_recvx (server, &command, &key, &value, NULL);
+    // server delivers new tuple:
+    assert (streq (command, "DELIVER"));
+    assert (streq (value, "service2"));
+    zstr_free (&command);
+    zstr_free (&key);
+    zstr_free (&value);
 
     zclock_sleep(500);
 
-    // destroy everything
-    printf("\nterm client\n");
     zstr_sendx (client1, "$TERM", NULL);
-    printf("\nterm server\n");
     zstr_sendx (server, "$TERM", NULL);
 
     zclock_sleep(500);
 
-    printf("\ndestroy client\n");
     zactor_destroy (&client1);
-    printf("\ndestroy server\n");
     zactor_destroy (&server);    
 
 #ifdef CZMQ_BUILD_DRAFT_API
